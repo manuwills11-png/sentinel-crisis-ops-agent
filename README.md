@@ -1,137 +1,283 @@
-# Autonomous AI Crisis Operations Agent
+🛰 Sentinel — Autonomous Crisis Operations AI Agent
 
-A production-grade, full-stack autonomous humanitarian crisis coordination system.
+Sentinel is a real-time humanitarian crisis response simulation platform that combines deterministic risk modeling with AI-generated operational command directives.
 
----
+The system continuously evaluates crisis zones, allocates constrained resources, forecasts cascading impacts, and generates structured emergency action plans using an LLM.
 
-## Architecture
+🚨 Problem
 
-```
-crisis-agent/
-├── backend/               # FastAPI Python backend
-│   ├── main.py            # App entry + AI agent loop (30s cycle)
-│   ├── models.py          # Pydantic schemas (Zone, Shelter, Alert, etc.)
-│   ├── requirements.txt
-│   └── agent/
-│       ├── verification.py   # Confidence scoring engine
-│       ├── scoring.py        # Priority & risk engine
-│       ├── allocation.py     # Resource allocation engine
-│       ├── cascade.py        # Cascading effects detection
-│       ├── forecasting.py    # 6-hour forecast engine
-│       ├── alerts.py         # Automated alert generation
-│       └── gemini_strategy.py  # Gemini/Claude AI reasoning
-│
-└── frontend/              # React + Vite frontend
-    ├── src/
-    │   ├── App.jsx            # Root component, state wiring
-    │   ├── api.js             # Axios API service layer
-    │   ├── hooks/
-    │   │   └── useAgentState.js  # Polling hook (6s interval)
-    │   └── components/
-    │       ├── Header.jsx
-    │       ├── Ticker.jsx
-    │       ├── Sidebar.jsx
-    │       ├── CrisisMap.jsx     # Leaflet map with all markers
-    │       ├── Dashboard.jsx
-    │       ├── AlertsTab.jsx
-    │       ├── TrendsTab.jsx     # Recharts + what-if controls
-    │       ├── StrategyTab.jsx
-    │       └── LogsTab.jsx
-    └── vite.config.js
-```
+In high-risk humanitarian crises (natural disasters, floods, earthquakes, conflict zones), response coordination suffers from:
 
----
+Data fragmentation
 
-## Quick Start
+Poor prioritization
 
-### 1. Backend
+Resource misallocation
 
-```bash
+Lack of structured operational directives
+
+Most dashboards visualize data — but do not operationalize it.
+
+Sentinel transforms crisis data into executable command structures.
+
+🧠 Solution
+
+Sentinel separates decision intelligence into two layers:
+
+1️⃣ Deterministic Risk Engine
+
+Responsible for:
+
+Zone verification scoring
+
+Priority computation
+
+Threat labeling
+
+Resource allocation optimization
+
+Cascade modeling
+
+6-hour forecasting
+
+2️⃣ AI Strategic Reasoning Layer
+
+Responsible for:
+
+Translating risk scores into structured command plans
+
+Generating operational directives
+
+Producing evacuation orders
+
+Defining monitoring triggers
+
+Structuring emergency response outputs
+
+The AI does NOT compute risk.
+It interprets structured risk signals.
+
+This ensures:
+
+Explainability
+
+Transparency
+
+Operational control
+
+⚙️ System Architecture
+Backend (FastAPI)
+
+Continuous autonomous agent loop
+
+Multi-zone scoring engine
+
+Resource pool optimization
+
+Cascade effect simulation
+
+Forecast generation
+
+Structured AI command generation (Gemma via Gemini API)
+
+Core Loop:
+
+Verify → Score → Rank → Allocate → Forecast → Generate Strategy → Alert
+
+Frontend (React + Vite)
+
+Real-time crisis map (Leaflet)
+
+Dynamic zone ranking sidebar
+
+Forecast trend visualizations (Recharts)
+
+What-if simulation controls
+
+Structured AI command rendering
+
+Autonomous cycle indicator
+
+Resource allocation dashboard
+
+🔥 Core Features
+
+Real-time zone prioritization
+
+Threat classification (Low / Moderate / High / Critical)
+
+Confidence scoring system
+
+Resource allocation tracking
+
+Cascade propagation modeling
+
+Forecast trend simulation
+
+AI-generated structured operational directives
+
+Simulation override controls
+
+Continuous autonomous agent cycle
+
+Non-blocking AI reasoning engine
+
+📊 Strategic Command Format
+
+The AI produces structured outputs in this format:
+
+[PRIORITY COMMANDS]
+
+Establish Incident Command Post.
+
+Deploy 4 medical units via Route 7.
+
+Initiate evacuation within 3km flood radius.
+
+[RESOURCE DIRECTIVES]
+
+Allocate remaining boats to waterfront extraction.
+
+Reserve helicopter for medevac standby.
+
+[EVACUATION & CIVIL CONTROL]
+
+Redirect civilians to Eastbrook Shelter A.
+
+Activate traffic redirection protocol.
+
+[RISK MONITORING]
+
+Escalate if severity exceeds 9.0.
+
+Monitor hospital capacity under 40%.
+
+This makes the output actionable for rescue personnel.
+
+🧪 What-If Simulation
+
+Operators can dynamically adjust:
+
+Severity boost
+
+Rainfall increase
+
+Conflict escalation
+
+The system recalculates forecast trajectories and resource strain in real time.
+
+🏗 Tech Stack
+Backend
+
+Python
+
+FastAPI
+
+Pydantic
+
+Uvicorn
+
+Gemini API (Gemma model)
+
+Frontend
+
+React (Vite)
+
+Leaflet
+
+Recharts
+
+IBM Plex Mono + Syne Typography
+
+Glass UI design system
+
+🚀 Local Setup
+Clone Repository
+
+git clone https://github.com/YOUR_USERNAME/sentinel-crisis-ops-agent.git
+
+cd sentinel-crisis-ops-agent
+
+Backend Setup
+
 cd backend
-
-# Create virtual environment
 python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-
-# Install dependencies
+venv\Scripts\activate
 pip install -r requirements.txt
 
-# Optional: set API key (falls back to Claude if not set)
-export GEMINI_API_KEY=your_key_here
+Create a .env file inside backend:
 
-# Run backend (auto-starts agent loop on startup)
+GEMINI_API_KEY=your_api_key_here
+
+Run backend:
+
 uvicorn main:app --reload --port 8000
-```
 
-Backend API available at: `http://localhost:8000`
-Interactive docs: `http://localhost:8000/docs`
+Backend runs on:
 
-### 2. Frontend
+http://localhost:8000
 
-```bash
+Frontend Setup
+
 cd frontend
-
 npm install
 npm run dev
-```
 
-Frontend available at: `http://localhost:5173`
+Frontend runs on:
 
----
+http://localhost:5173
 
-## API Endpoints
+🔐 Environment Variables
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/state` | Full agent state (all data) |
-| GET | `/zones` | Zone list with scores |
-| GET | `/alerts` | Active alerts |
-| GET | `/strategy` | Current AI strategy |
-| GET | `/forecast` | 6-hour forecast |
-| GET | `/resources` | Resource pool + utilization |
-| GET | `/shelters` | Shelter status |
-| GET | `/logs` | Decision audit log |
-| POST | `/citizen-ping` | Submit citizen SOS ping |
-| POST | `/simulate` | Update simulation parameters |
-| POST | `/strategy/regenerate` | Trigger new strategy generation |
-| GET | `/health` | Agent health check |
+Backend requires:
 
----
+GEMINI_API_KEY
 
-## Scoring Formulas (Deterministic — No AI)
+Never commit .env files.
 
-### Confidence
-```
-Confidence = (Source_Reliability × 0.4)
-           + (Cross_Validation × 0.3)
-           + (Time_Freshness × 0.2)
-           + (Data_Consistency × 0.1)
-```
+🧠 Design Philosophy
 
-### Priority
-```
-Priority = (Human_Risk × 0.4)
-         + (Supply_Urgency × 0.2)
-         + (Infrastructure_Risk × 0.2)
-         - (Accessibility × 0.2)
-```
+Sentinel is built around:
 
-Zones ranked by: `priority × confidence`
+Deterministic control systems
 
----
+AI-assisted reasoning
 
-## AI Reasoning (Gemini / Claude)
+Structured operational output
 
-The AI receives structured JSON with pre-computed scores and **only explains decisions** in natural language. It never recomputes scores or suggests different prioritization.
+Crisis transparency
 
-Fallback chain: Gemini → Claude API → Offline deterministic text
+Explainable intelligence
 
----
+It avoids black-box decision making by isolating AI reasoning from risk scoring.
 
-## Design Principles
+📈 Future Improvements
 
-- **Hazard-agnostic**: Works for any disaster type
-- **Deterministic core**: All scoring is formula-based
-- **Verified-first**: Low-confidence signals are monitored but not acted on
-- **Civilian humanitarian only**: No military logic
-- **Explainable**: Every decision is logged and AI-explained
+Multi-agent coordination
+
+Real-time sensor ingestion
+
+Satellite data streaming
+
+Reinforcement learning resource allocation
+
+Multi-model strategic reasoning
+
+GIS evacuation corridor overlays
+
+Live deployment dashboard
+
+🛡 Disclaimer
+
+This project is a simulation and research prototype.
+Not intended for live emergency deployment.
+
+👨‍💻 Author
+
+Martin Wills
+B.Tech Computer Science
+AI Systems & Autonomous Agents
+
+⭐ License
+
+MIT License
