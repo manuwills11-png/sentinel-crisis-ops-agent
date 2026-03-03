@@ -1,223 +1,238 @@
 // useDispatch.js
 import { useState, useCallback, useRef, useEffect } from 'react';
 import {
-  VEHICLE_TYPES, distanceKm, etaMs, onSceneMs, newDispatchId,
-  makeLogEntry, LOG_TYPES, randomCommsMessage, interpolatePos, bearingDeg
+  HQ, VEHICLE_TYPES, HAZARD_VEHICLE_MAP, onSceneMs, newDispatchId,
+  makeLogEntry, LOG_TYPES, randomCommsMessage, interpolatePos, bearingDeg,
+  distanceKm, etaMs,
 } from './DispatchEngine';
 
-const HQ = { lat: 40.73, lng: -73.99 };
-
-export function useDispatch({ zones, zoneOverrides, setZoneOverrides, onZoneOverride }) {
-  const [dispatches, setDispatches] = useState([]);   // active + historical
-  const [logEntries, setLogEntries] = useState([
-    makeLogEntry(LOG_TYPES.SYSTEM, { message: 'Crisis Operations Center ONLINE. All systems nominal.' }),
-    makeLogEntry(LOG_TYPES.SYSTEM, { message: 'Dispatch coordinator ready. Awaiting first deployment order.' }),
+export function useDispatch({ zones, zoneOverrides, setZoneOverrides }) {
+  // dispatchesRef holds the live data — read by CrisisMap's own rAF loop
+  const dispatchesRef = useRef([]);
+  // State copy for React renders (alerts tab, logs tab, sidebar counts)
+  const [dispatches, setDispatches]   = useState([]);
+  const [logEntries, setLogEntries]   = useState([
+    makeLogEntry(LOG_TYPES.SYSTEM, { message: 'Crisis Operations Center ONLINE — VIT Chennai HQ active.' }),
+    makeLogEntry(LOG_TYPES.SYSTEM, { message: 'AI Dispatch Coordinator armed. Monitoring Tamil Nadu region.' }),
   ]);
-  const timersRef = useRef({});  // zoneId → timer handles
+  const timersRef = useRef({});
 
   const addLog = useCallback((type, data) => {
     setLogEntries(prev => [makeLogEntry(type, data), ...prev].slice(0, 300));
   }, []);
 
-  // Send a dispatch
-  const sendDispatch = useCallback((zone, vehicleKey) => {
+  // Sync ref → state (throttled to ~10fps so UI updates without overloading React)
+  const syncRef = useRef(null);
+  const scheduleSync = useCallback(() => {
+    if (syncRef.current) return;
+    syncRef.current = setTimeout(() => {
+      setDispatches([...dispatchesRef.current]);
+      syncRef.current = null;
+    }, 100);
+  }, []);
+
+  const updateDispatch = useCallback((id, patch) => {
+    dispatchesRef.current = dispatchesRef.current.map(d => d.id === id ? { ...d, ...patch } : d);
+    scheduleSync();
+  }, [scheduleSync]);
+
+  const sendDispatch = useCallback((zone, vehicleKey, isAutoDispatch = false) => {
     const vehicle = VEHICLE_TYPES[vehicleKey];
-    if (!zone?.lat || !zone?.lng) return;
+    if (!zone?.lat || !zone?.lng || !vehicle) return null;
 
     const id = newDispatchId();
-    const dist = distanceKm(HQ, zone);
-    const travelMs = etaMs(dist, vehicle.speedKmh);
-    const etaSec = Math.round(travelMs / 1000);
+    const distKm   = distanceKm(HQ, { lat: zone.lat, lng: zone.lng });
+    const travelMs = etaMs(distKm, vehicle.speedKmh);
+    const returnMs = etaMs(distKm, vehicle.returnSpeedKmh);
+    const etaSec   = Math.round(travelMs / 1000);
     const departedAt = Date.now();
 
     const dispatch = {
-      id,
-      vehicleKey,
-      vehicleIcon: vehicle.icon,
+      id, vehicleKey,
+      vehicleIcon:  vehicle.icon,
       vehicleLabel: vehicle.label,
       vehicleColor: vehicle.color,
-      zoneId: zone.zone_id,
+      zoneId:   zone.zone_id,
       zoneName: zone.name,
-      zoneLat: zone.lat,
-      zoneLng: zone.lng,
-      severity: zone.severity_level,
-      dist,
-      departedAt,
-      arrivedAt: null,
-      returnedAt: null,
-      travelMs,
-      status: 'en_route',   // en_route | on_scene | returning | returned
-      bearing: bearingDeg(HQ, zone),
+      zoneLat:  zone.lat,
+      zoneLng:  zone.lng,
+      severity: zone.severity_level || 5,
+      departedAt, travelMs,
+      returnMs,
+      returnDepartedAt: null,
+      arrivedAt: null, returnedAt: null,
+      status: 'en_route',
       currentPos: { ...HQ },
+      progress: 0,
+      isAutoDispatch,
+      // For rescue missions
+      rescueTarget: zone.rescueTarget || null,
     };
 
-    setDispatches(prev => [dispatch, ...prev]);
+    dispatchesRef.current = [dispatch, ...dispatchesRef.current];
+    scheduleSync();
+
     addLog(LOG_TYPES.DISPATCH_SENT, {
       id, vehicleIcon: vehicle.icon, vehicleLabel: vehicle.label,
       zoneName: zone.name, etaSec, capacity: vehicle.capacity,
     });
+    if (isAutoDispatch) {
+      addLog(LOG_TYPES.SYSTEM, { message: `AI auto-dispatched ${vehicle.icon} ${vehicle.label} → ${zone.name} (SEV ${zone.severity_level?.toFixed(1)})` });
+    }
 
-    // Schedule random comms messages during travel
-    const commsDelays = [0.3, 0.6, 0.85].map(f => travelMs * f);
-    commsDelays.forEach((delay, i) => {
-      const h = setTimeout(() => {
-        addLog(LOG_TYPES.COMMS_INTERCEPT, {
-          id, message: randomCommsMessage(vehicleKey),
-        });
-      }, delay);
-      timersRef.current[`${id}-comms-${i}`] = h;
+    // Comms during travel
+    [0.3, 0.6, 0.85].forEach((f, i) => {
+      timersRef.current[`${id}-c${i}`] = setTimeout(() => {
+        addLog(LOG_TYPES.COMMS_INTERCEPT, { id, message: randomCommsMessage(vehicleKey) });
+      }, travelMs * f);
     });
 
-    // Arrival
-    const arrivalH = setTimeout(() => {
-      const arrivedAt = Date.now();
-      setDispatches(prev => prev.map(d =>
-        d.id === id ? { ...d, status: 'on_scene', arrivedAt, currentPos: { lat: zone.lat, lng: zone.lng } } : d
-      ));
+    // ── ARRIVAL ──
+    timersRef.current[`${id}-arr`] = setTimeout(() => {
+      updateDispatch(id, { status: 'on_scene', arrivedAt: Date.now(), currentPos: { lat: zone.lat, lng: zone.lng }, progress: 1 });
+
       addLog(LOG_TYPES.DISPATCH_ARRIVED, {
         id, zoneName: zone.name,
-        action: vehicleKey === 'drone' ? 'aerial surveillance' : vehicleKey === 'ambulance' ? 'medical triage' : 'search & rescue',
+        action: vehicleKey === 'drone' ? 'aerial surveillance'
+              : vehicleKey === 'ambulance' ? 'medical triage' : 'search & rescue',
       });
 
-      // Severity reduction on arrival
-      const reduction = vehicle.severityReduction;
-      const currentSev = (zoneOverrides[zone.zone_id] || 0) + (zone.severity_level || 0);
-      const newSev = Math.max(0, currentSev - reduction * 0.5); // partial on arrival
-      const deltaSevArrival = currentSev - newSev;
-
-      addLog(LOG_TYPES.DISPATCH_ON_SCENE, {
-        id, zoneName: zone.name,
-        oldSev: currentSev, newSev,
-      });
-
-      // Apply severity reduction (as override delta)
-      const currentDelta = zoneOverrides[zone.zone_id] || 0;
+      // Severity reduction — 50% on arrival
       const baseSev = zone.severity_level || 0;
-      const newDelta = Math.max(-baseSev, currentDelta - deltaSevArrival);
-      if (onZoneOverride) {
-        // Set exact delta rather than incrementing
-        setZoneOverrides(prev => ({
-          ...prev,
-          [zone.zone_id]: newDelta,
-        }));
-      }
+      const currentDelta = zoneOverrides[zone.zone_id] || 0;
+      const currentSev   = Math.max(0, baseSev + currentDelta);
+      const arrReduce    = vehicle.severityReduction * 0.5;
+      const newSev       = Math.max(0, currentSev - arrReduce);
+      const newDelta     = newSev - baseSev;
 
-      addLog(LOG_TYPES.SEVERITY_REDUCED, {
-        zoneName: zone.name,
-        oldSev: currentSev, newSev, delta: deltaSevArrival,
-      });
+      setZoneOverrides(prev => ({ ...prev, [zone.zone_id]: newDelta }));
+      addLog(LOG_TYPES.DISPATCH_ON_SCENE,  { id, zoneName: zone.name, oldSev: currentSev, newSev });
+      addLog(LOG_TYPES.SEVERITY_REDUCED,   { zoneName: zone.name, oldSev: currentSev, newSev, delta: arrReduce });
 
-      // On-scene duration: depends on severity
+      // Comms on-scene
       const sceneMs = onSceneMs(zone.severity_level || 5);
+      timersRef.current[`${id}-sc`] = setTimeout(() =>
+        addLog(LOG_TYPES.COMMS_INTERCEPT, { id, message: randomCommsMessage(vehicleKey) }), sceneMs * 0.5);
 
-      const commsOnScene = setTimeout(() => {
-        addLog(LOG_TYPES.COMMS_INTERCEPT, { id, message: randomCommsMessage(vehicleKey) });
-      }, sceneMs * 0.5);
-      timersRef.current[`${id}-scene-comms`] = commsOnScene;
-
-      // Return trip
-      const returnH = setTimeout(() => {
-        const returnDist = distanceKm(zone, HQ);
-        const returnMs = etaMs(returnDist, vehicle.returnSpeedKmh);
-
-        setDispatches(prev => prev.map(d =>
-          d.id === id ? { ...d, status: 'returning', returnDepartedAt: Date.now(), returnMs, bearing: bearingDeg(zone, HQ) } : d
-        ));
+      // ── DEPART SCENE ──
+      timersRef.current[`${id}-dep`] = setTimeout(() => {
+        const returnDepartedAt = Date.now();
+        updateDispatch(id, { status: 'returning', returnDepartedAt, returnMs });
         addLog(LOG_TYPES.DISPATCH_RETURNING, { id, zoneName: zone.name });
 
-        // Apply remaining severity reduction while on scene
-        const sevAfterScene = Math.max(0, newSev - reduction * 0.5);
-        const deltaScene = newSev - sevAfterScene;
-        if (deltaScene > 0) {
-          setZoneOverrides(prev => ({
-            ...prev,
-            [zone.zone_id]: Math.max(-(zone.severity_level || 0), (prev[zone.zone_id] || 0) - deltaScene),
-          }));
-          addLog(LOG_TYPES.SEVERITY_REDUCED, {
-            zoneName: zone.name,
-            oldSev: newSev, newSev: sevAfterScene, delta: deltaScene,
-          });
-        }
+        // Remaining severity reduction on departure
+        const baseSev2    = zone.severity_level || 0;
+        const curDelta2   = zoneOverrides[zone.zone_id] ?? newDelta;
+        const curSev2     = Math.max(0, baseSev2 + curDelta2);
+        const depReduce   = vehicle.severityReduction * 0.5;
+        const newSev2     = Math.max(0, curSev2 - depReduce);
+        const newDelta2   = newSev2 - baseSev2;
+        setZoneOverrides(prev => ({ ...prev, [zone.zone_id]: newDelta2 }));
+        addLog(LOG_TYPES.SEVERITY_REDUCED, { zoneName: zone.name, oldSev: curSev2, newSev: newSev2, delta: depReduce });
 
-        // Final return
-        const finalH = setTimeout(() => {
+        // ── RETURNED ──
+        timersRef.current[`${id}-ret`] = setTimeout(() => {
           const totalTimeSec = Math.round((Date.now() - departedAt) / 1000);
-          setDispatches(prev => prev.map(d =>
-            d.id === id ? { ...d, status: 'returned', returnedAt: Date.now(), currentPos: { ...HQ } } : d
-          ));
-          addLog(LOG_TYPES.DISPATCH_RETURNED, {
-            id, vehicleLabel: vehicle.label, totalTimeSec,
-          });
-          // Remove from map after a few seconds
+          updateDispatch(id, { status: 'returned', returnedAt: Date.now(), currentPos: { ...HQ }, progress: 1 });
+          addLog(LOG_TYPES.DISPATCH_RETURNED, { id, vehicleLabel: vehicle.label, totalTimeSec });
+          // Remove after 5s
           setTimeout(() => {
-            setDispatches(prev => prev.filter(d => d.id !== id || d.status !== 'returned'));
+            dispatchesRef.current = dispatchesRef.current.filter(d => d.id !== id);
+            scheduleSync();
           }, 5000);
         }, returnMs);
-        timersRef.current[`${id}-return`] = finalH;
       }, sceneMs);
-      timersRef.current[`${id}-scene`] = returnH;
     }, travelMs);
-    timersRef.current[`${id}-arrival`] = arrivalH;
 
     return id;
-  }, [zoneOverrides, onZoneOverride, addLog]);
+  }, [addLog, zoneOverrides, setZoneOverrides, updateDispatch, scheduleSync]);
 
-  // Animate dispatch positions on a rAF loop
-  const [tick, setTick] = useState(0);
-  useEffect(() => {
-    let raf;
-    const animate = () => {
-      setTick(t => t + 1);
-      raf = requestAnimationFrame(animate);
+  // ── Rescue a trapped person ──
+  const sendRescue = useCallback((report, deleteFromFirebase) => {
+    // Create a pseudo-zone for the rescue target
+    const rescueZone = {
+      zone_id:          `rescue-${report.id}`,
+      name:             `Rescue · ${report.name || report.id}`,
+      lat:              Number(report.lat),
+      lng:              Number(report.lng),
+      hazard_type:      'Trapped Person',
+      severity_level:   8,
+      confidence:       95,
+      population_at_risk: 1,
+      threat_label:     'CRITICAL',
+      priority:         0.9,
+      rescueTarget:     report.id,   // Firebase key to delete on return
     };
-    raf = requestAnimationFrame(animate);
-    return () => cancelAnimationFrame(raf);
-  }, []);
+    // Pick best vehicle (helicopter for speed)
+    const vehicleKey = 'helicopter';
+    const id = sendDispatch(rescueZone, vehicleKey);
+    if (!id) return;
 
-  // Compute current interpolated positions for all active dispatches
-  const liveDispatches = dispatches.map(d => {
-    if (d.status === 'en_route') {
-      const elapsed = Date.now() - d.departedAt;
-      const t = Math.min(1, elapsed / d.travelMs);
-      const origin = HQ;
-      const dest = { lat: d.zoneLat, lng: d.zoneLng };
-      return { ...d, currentPos: interpolatePos(origin, dest, t), progress: t };
-    }
-    if (d.status === 'returning') {
-      const elapsed = Date.now() - d.returnDepartedAt;
-      const t = Math.min(1, elapsed / d.returnMs);
-      const origin = { lat: d.zoneLat, lng: d.zoneLng };
-      const dest = HQ;
-      return { ...d, currentPos: interpolatePos(origin, dest, t), progress: t };
-    }
-    return d;
-  });
+    addLog(LOG_TYPES.SYSTEM, { message: `🆘 RESCUE MISSION ${id} — ${report.name || 'Unknown'} at (${Number(report.lat).toFixed(4)}, ${Number(report.lng).toFixed(4)})` });
 
-  // Log when zone severity changes significantly (escalation detection)
-  const prevSeveritiesRef = useRef({});
+    // Delete Firebase record after helicopter returns
+    const checkReturn = setInterval(() => {
+      const d = dispatchesRef.current.find(d => d.id === id);
+      if (d?.status === 'returned') {
+        clearInterval(checkReturn);
+        deleteFromFirebase(report.id);
+        addLog(LOG_TYPES.SYSTEM, { message: `✓ RESCUED — ${report.name || 'person'} extracted safely. Firebase record cleared.` });
+      }
+      if (!d) clearInterval(checkReturn); // dispatch was removed
+    }, 1000);
+  }, [sendDispatch, addLog]);
+
+  // ── AI auto-dispatch ──
+  // Every 15s, scan zones with HIGH/CRITICAL severity that have no active dispatch
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const activeZoneIds = new Set(
+        dispatchesRef.current
+          .filter(d => d.status === 'en_route' || d.status === 'on_scene')
+          .map(d => d.zoneId)
+      );
+
+      const candidates = zones.filter(z =>
+        (z.threat_label === 'CRITICAL' || z.threat_label === 'HIGH') &&
+        z.severity_level >= 6 &&
+        !activeZoneIds.has(z.zone_id) &&
+        z.lat && z.lng
+      );
+
+      if (candidates.length === 0) return;
+
+      // Dispatch to the highest severity unattended zone
+      const target = candidates.sort((a, b) => (b.severity_level || 0) - (a.severity_level || 0))[0];
+      const hazardVehicles = HAZARD_VEHICLE_MAP[target.hazard_type] || ['rescue_team'];
+      const vehicleKey = hazardVehicles[0];
+
+      sendDispatch(target, vehicleKey, true);
+    }, 15000);
+
+    return () => clearInterval(interval);
+  }, [zones, sendDispatch]);
+
+  // Zone escalation logger
+  const prevSevRef = useRef({});
   useEffect(() => {
     zones.forEach(z => {
-      const prev = prevSeveritiesRef.current[z.zone_id];
+      const prev = prevSevRef.current[z.zone_id];
       const curr = z.severity_level;
       if (prev !== undefined && Math.abs(curr - prev) >= 0.5) {
-        const oldThreat = prev > 8 ? 'CRITICAL' : prev > 6 ? 'HIGH' : prev > 3 ? 'MODERATE' : 'LOW';
-        const newThreat = curr > 8 ? 'CRITICAL' : curr > 6 ? 'HIGH' : curr > 3 ? 'MODERATE' : 'LOW';
-        if (oldThreat !== newThreat) {
-          if (curr > prev) {
-            addLog(LOG_TYPES.ZONE_ESCALATED, { zoneName: z.name, oldSev: prev, newSev: curr, newThreat });
-          } else {
-            addLog(LOG_TYPES.ZONE_DEESCALATED, { zoneName: z.name, oldSev: prev, newSev: curr, newThreat });
-          }
+        const lbl = s => s > 8 ? 'CRITICAL' : s > 6 ? 'HIGH' : s > 3 ? 'MODERATE' : 'LOW';
+        if (lbl(curr) !== lbl(prev)) {
+          addLog(curr > prev ? LOG_TYPES.ZONE_ESCALATED : LOG_TYPES.ZONE_DEESCALATED,
+            { zoneName: z.name, oldSev: prev, newSev: curr, newThreat: lbl(curr) });
         }
       }
-      prevSeveritiesRef.current[z.zone_id] = curr;
+      prevSevRef.current[z.zone_id] = curr;
     });
-  }, [zones]);
+  }, [zones, addLog]);
 
-  // Cleanup timers
-  useEffect(() => {
-    return () => Object.values(timersRef.current).forEach(clearTimeout);
+  useEffect(() => () => {
+    Object.values(timersRef.current).forEach(clearTimeout);
+    if (syncRef.current) clearTimeout(syncRef.current);
   }, []);
 
-  return { dispatches: liveDispatches, logEntries, sendDispatch, addLog };
+  return { dispatches, dispatchesRef, logEntries, sendDispatch, sendRescue, addLog };
 }
