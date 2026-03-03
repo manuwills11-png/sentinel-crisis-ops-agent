@@ -3,7 +3,6 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import {
   HQ, VEHICLE_TYPES, HAZARD_VEHICLE_MAP, onSceneMs, newDispatchId,
   makeLogEntry, LOG_TYPES, randomCommsMessage, interpolatePos, bearingDeg,
-  distanceKm, etaMs,
 } from './DispatchEngine';
 
 export function useDispatch({ zones, zoneOverrides, setZoneOverrides }) {
@@ -41,9 +40,7 @@ export function useDispatch({ zones, zoneOverrides, setZoneOverrides }) {
     if (!zone?.lat || !zone?.lng || !vehicle) return null;
 
     const id = newDispatchId();
-    const distKm   = distanceKm(HQ, { lat: zone.lat, lng: zone.lng });
-    const travelMs = etaMs(distKm, vehicle.speedKmh);
-    const returnMs = etaMs(distKm, vehicle.returnSpeedKmh);
+    const travelMs = vehicle.travelMs;
     const etaSec   = Math.round(travelMs / 1000);
     const departedAt = Date.now();
 
@@ -58,7 +55,7 @@ export function useDispatch({ zones, zoneOverrides, setZoneOverrides }) {
       zoneLng:  zone.lng,
       severity: zone.severity_level || 5,
       departedAt, travelMs,
-      returnMs,
+      returnMs: vehicle.returnMs,
       returnDepartedAt: null,
       arrivedAt: null, returnedAt: null,
       status: 'en_route',
@@ -117,7 +114,7 @@ export function useDispatch({ zones, zoneOverrides, setZoneOverrides }) {
       // ── DEPART SCENE ──
       timersRef.current[`${id}-dep`] = setTimeout(() => {
         const returnDepartedAt = Date.now();
-        updateDispatch(id, { status: 'returning', returnDepartedAt, returnMs });
+        updateDispatch(id, { status: 'returning', returnDepartedAt, returnMs: vehicle.returnMs });
         addLog(LOG_TYPES.DISPATCH_RETURNING, { id, zoneName: zone.name });
 
         // Remaining severity reduction on departure
@@ -140,7 +137,7 @@ export function useDispatch({ zones, zoneOverrides, setZoneOverrides }) {
             dispatchesRef.current = dispatchesRef.current.filter(d => d.id !== id);
             scheduleSync();
           }, 5000);
-        }, returnMs);
+        }, vehicle.returnMs);
       }, sceneMs);
     }, travelMs);
 
@@ -182,8 +179,8 @@ export function useDispatch({ zones, zoneOverrides, setZoneOverrides }) {
     }, 1000);
   }, [sendDispatch, addLog]);
 
-  // ── AI auto-dispatch ──
-  // Every 15s, scan zones with HIGH/CRITICAL severity that have no active dispatch
+  // ── AI auto-dispatch (rule-based) ──
+  // Every 15s: score each unattended zone, pick best vehicle per hazard, log reasoning
   useEffect(() => {
     const interval = setInterval(() => {
       const activeZoneIds = new Set(
@@ -194,23 +191,49 @@ export function useDispatch({ zones, zoneOverrides, setZoneOverrides }) {
 
       const candidates = zones.filter(z =>
         (z.threat_label === 'CRITICAL' || z.threat_label === 'HIGH') &&
-        z.severity_level >= 6 &&
+        z.severity_level >= 5.5 &&
         !activeZoneIds.has(z.zone_id) &&
         z.lat && z.lng
       );
 
       if (candidates.length === 0) return;
 
-      // Dispatch to the highest severity unattended zone
-      const target = candidates.sort((a, b) => (b.severity_level || 0) - (a.severity_level || 0))[0];
-      const hazardVehicles = HAZARD_VEHICLE_MAP[target.hazard_type] || ['rescue_team'];
-      const vehicleKey = hazardVehicles[0];
+      // Score: weight severity (60%), population (25%), confidence (15%)
+      const scored = candidates.map(z => ({
+        zone: z,
+        score: (z.severity_level / 10) * 0.6 +
+               (Math.min(z.population_at_risk || 0, 100000) / 100000) * 0.25 +
+               ((z.confidence || 50) / 100) * 0.15,
+      })).sort((a, b) => b.score - a.score);
 
-      sendDispatch(target, vehicleKey, true);
+      // Dispatch up to 2 zones per cycle
+      const toDispatch = scored.slice(0, 2);
+
+      for (const { zone, score } of toDispatch) {
+        const hazardVehicles = HAZARD_VEHICLE_MAP[zone.hazard_type] || ['rescue_team'];
+
+        // Pick vehicle with highest severity reduction that matches hazard
+        const vehicleKey = hazardVehicles.reduce((best, vk) => {
+          const v = VEHICLE_TYPES[vk]; if (!v) return best;
+          return !best || v.severityReduction > VEHICLE_TYPES[best].severityReduction ? vk : best;
+        }, null) || hazardVehicles[0];
+
+        const v = VEHICLE_TYPES[vehicleKey];
+        const reasons = [];
+        if (zone.threat_label === 'CRITICAL') reasons.push('CRITICAL threat');
+        if (zone.severity_level >= 8) reasons.push(`severity ${zone.severity_level.toFixed(1)}`);
+        if ((zone.population_at_risk || 0) >= 30000) reasons.push(`${Math.round(zone.population_at_risk/1000)}K pop at risk`);
+        reasons.push(`best unit for ${zone.hazard_type}`);
+
+        sendDispatch(zone, vehicleKey, true);
+        addLog(LOG_TYPES.SYSTEM, {
+          message: `🤖 AUTO-DISPATCH → ${v.icon} ${v.label} to ${zone.name} [score ${score.toFixed(2)}] — ${reasons.join(', ')}`,
+        });
+      }
     }, 15000);
 
     return () => clearInterval(interval);
-  }, [zones, sendDispatch]);
+  }, [zones, sendDispatch, addLog]);
 
   // Zone escalation logger
   const prevSevRef = useRef({});
